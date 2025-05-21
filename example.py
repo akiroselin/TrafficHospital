@@ -16,6 +16,13 @@ from dotenv import load_dotenv
 from main import create_data_analysis_agent
 from data_tools import generate_sample_data as generate_sample_data_tool
 
+from langfuse.callback import CallbackHandler
+
+langfuse_handler = CallbackHandler(
+    public_key="pk-lf-b75a0395-a0d0-4106-9965-45978588a4ef",
+    secret_key="sk-lf-af2acb19-46b1-4f72-8571-3c945d2b50c3",
+    host="https://cloud.langfuse.com"
+)
 # Load environment variables
 load_dotenv()
 
@@ -32,25 +39,25 @@ def run_example():
     # Step 1: Generate sample stock market data
     response = agent.invoke({
         "input": "Generate a sample stock market dataset with 200 rows"
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
     
     # Step 2: Get information about the dataset
     response = agent.invoke({
         "input": "Tell me about the stock_data dataset"
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
     
     # Step 3: Run correlation analysis
     response = agent.invoke({
         "input": "Run a correlation analysis on the stock_data"
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
     
     # Step 4: Create a visualization
     response = agent.invoke({
         "input": "Create a line plot of close vs date for AAPL in the stock_data"
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
     
     print("\n" + "="*50)
@@ -60,25 +67,25 @@ def run_example():
     # Step 1: Generate sample sales data
     response = agent.invoke({
         "input": "Generate a sample sales dataset with 150 rows"
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
     
     # Step 2: Ask a complex question
     response = agent.invoke({
         "input": "Which product has the highest average profit margin, and how does it vary by region?"
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
     
     # Step 3: Create a visualization based on the analysis
     response = agent.invoke({
         "input": "Create a bar chart showing profit by product and region"
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
     
     # Step 4: Find outliers
     response = agent.invoke({
         "input": "Find outliers in the profit column of the sales_data"
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
     
     print("\n" + "="*50)
@@ -93,7 +100,7 @@ def run_example():
         2. Then analyze if there's a correlation between unit_price and units_sold
         3. Finally, tell me which region has the highest average revenue and why
         """
-    })
+    }, config={"callbacks": [langfuse_handler]})
     print(f"\nAgent Response:\n{response['output']}\n")
 
 if __name__ == "__main__":

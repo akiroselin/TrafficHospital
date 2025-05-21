@@ -35,7 +35,7 @@ def run_tests():
     # Check required packages
     required_packages = [
         "langchain", "langchain_ollama", "pandas", 
-        "numpy", "matplotlib", "seaborn", "scikit-learn"
+        "numpy", "matplotlib", "seaborn", "sklearn"
     ]
     
     all_packages_installed = True
@@ -90,23 +90,24 @@ def run_tests():
     
     # Generate sample data
     try:
-        result = generate_sample_data(rows=10, data_type="random")
+        #result = generate_sample_data(rows=10, data_type="random")
+        result = generate_sample_data.invoke({"rows": 10, "data_type": "random"})
         print(f"  - generate_sample_data: {result}")
         
         # List datasets
-        result = list_datasets()
+        result = list_datasets.invoke({})
         print(f"  - list_datasets: {result}")
         
         # Get dataset info
-        result = get_dataset_info("random_data")
+        result = get_dataset_info.invoke({"dataset_name":"random_data"})
         print(f"  - get_dataset_info: Successfully retrieved info for random_data")
         
         # Create a simple visualization
-        result = create_visualization(
-            dataset_name="random_data",
-            plot_type="histogram",
-            x="numeric_normal",
-            filename="test_histogram"
+        result = create_visualization.invoke({
+            "dataset_name":"random_data",
+            "plot_type":"histogram",
+            "x":"numeric_normal",
+            "filename":"test_histogram"}
         )
         print(f"  - create_visualization: {result}")
         

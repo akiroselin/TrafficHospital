@@ -5,19 +5,70 @@ Data analysis tools for LangChain agent.
 import os
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import matplotlib.pyplot as plt 
+import seaborn as sns 
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 from typing import List, Dict, Any, Optional, Union
 from langchain.tools import BaseTool, StructuredTool, tool
-from langchain.pydantic_v1 import BaseModel, Field
+from pydantic import BaseModel, Field 
 from io import StringIO
 
 
 # Global variable to store loaded datasets
 DATASETS = {}
+
+# --- Pydantic Models for Chart.js Structure ---
+class ChartJsDataset(BaseModel):
+    label: str
+    data: List[Any] 
+    borderColor: Optional[str] = None
+    backgroundColor: Optional[str] = None
+    tension: Optional[float] = None
+    fill: Optional[bool] = None
+
+class ChartJsData(BaseModel):
+    labels: List[str]
+    datasets: List[ChartJsDataset]
+
+class ChartJsScaleTitle(BaseModel):
+    display: bool
+    text: str
+
+class ChartJsScale(BaseModel):
+    type: str
+    beginAtZero: Optional[bool] = None
+    title: Optional[ChartJsScaleTitle] = None
+
+class ChartJsScales(BaseModel):
+    x: Optional[ChartJsScale] = None
+    y: Optional[ChartJsScale] = None
+
+class ChartJsLegend(BaseModel):
+    display: bool
+    position: Optional[str] = None
+
+class ChartJsTitle(BaseModel):
+    display: bool
+    text: str
+
+class ChartJsPlugins(BaseModel):
+    legend: Optional[ChartJsLegend] = None
+    title: Optional[ChartJsTitle] = None
+
+class ChartJsOptions(BaseModel):
+    responsive: bool
+    maintainAspectRatio: Optional[bool] = None
+    plugins: Optional[ChartJsPlugins] = None
+    scales: Optional[ChartJsScales] = None
+
+class ChartJsPayload(BaseModel):
+    type: str
+    data: ChartJsData
+    options: ChartJsOptions
+# --- End Pydantic Models ---
+
 
 class DataFrameInfo(BaseModel):
     """Information about a pandas DataFrame."""
@@ -32,412 +83,195 @@ class DataFrameInfo(BaseModel):
 def load_csv(file_path: str) -> str:
     """
     Load a CSV file into a pandas DataFrame and store it in memory.
-    
+    The dataset will be named after the CSV file (without extension).
     Args:
-        file_path: Path to the CSV file to load
-        
+        file_path: Path to the CSV file to load.
     Returns:
-        A message indicating success or failure
+        A message indicating success or failure, including dataset name and shape.
     """
     try:
-        if not os.path.exists(file_path):
-            return f"Error: File '{file_path}' does not exist."
-        
+        if not os.path.exists(file_path): return f"Error: File '{file_path}' does not exist."
         df = pd.read_csv(file_path)
-        file_name = os.path.basename(file_path)
-        dataset_name = os.path.splitext(file_name)[0]
+        dataset_name = os.path.splitext(os.path.basename(file_path))[0]
         DATASETS[dataset_name] = df
-        
         return f"Successfully loaded '{file_path}' as dataset '{dataset_name}' with shape {df.shape}"
-    except Exception as e:
-        return f"Error loading CSV file: {str(e)}"
+    except Exception as e: return f"Error loading CSV file: {str(e)}"
 
 @tool
 def load_excel(file_path: str, sheet_name: Optional[str] = None) -> str:
     """
-    Load an Excel file into a pandas DataFrame and store it in memory.
-    
+    Load a specific sheet from an Excel file into a pandas DataFrame and store it in memory.
+    If sheet_name is None and the Excel file has only one sheet, that sheet is loaded.
+    If sheet_name is None and multiple sheets exist, an error message listing available sheets is returned.
+    The dataset will be named after the Excel file (without extension).
     Args:
-        file_path: Path to the Excel file to load
-        sheet_name: Optional name of the sheet to load (if None, loads the first sheet)
-        
+        file_path: Path to the Excel file to load.
+        sheet_name: Optional name of the sheet to load. If None, attempts to load the first sheet or prompts if multiple exist.
     Returns:
-        A message indicating success or failure
+        A message indicating success, failure, or a prompt to specify a sheet name.
     """
     try:
-        if not os.path.exists(file_path):
-            return f"Error: File '{file_path}' does not exist."
+        if not os.path.exists(file_path): return f"Error: File '{file_path}' does not exist."
+        xls = pd.ExcelFile(file_path)
+        available_sheets = xls.sheet_names
+        if not available_sheets: return f"Error: No sheets found in Excel file '{file_path}'."
         
-        df = pd.read_excel(file_path, sheet_name=sheet_name)
-        file_name = os.path.basename(file_path)
-        dataset_name = os.path.splitext(file_name)[0]
+        df = None
+        loaded_sheet_name = ""
+
+        if sheet_name is not None: 
+            if sheet_name in available_sheets:
+                df = pd.read_excel(xls, sheet_name=sheet_name)
+                loaded_sheet_name = sheet_name
+            else: return (f"Error: Sheet '{sheet_name}' not found in '{file_path}'. "
+                        f"Available sheets are: {', '.join(available_sheets)}.")
+        else: 
+            if len(available_sheets) == 1:
+                df = pd.read_excel(xls, sheet_name=available_sheets[0])
+                loaded_sheet_name = available_sheets[0]
+            else: 
+                return (f"Excel file '{file_path}' contains multiple sheets: {', '.join(available_sheets)}. "
+                        "Please specify which sheet to load using the 'sheet_name' parameter.")
+        
+        dataset_name = os.path.splitext(os.path.basename(file_path))[0]
         DATASETS[dataset_name] = df
         
-        return f"Successfully loaded '{file_path}' as dataset '{dataset_name}' with shape {df.shape}"
-    except Exception as e:
-        return f"Error loading Excel file: {str(e)}"
+        msg = f"Successfully loaded sheet '{loaded_sheet_name}' from '{file_path}' as dataset '{dataset_name}' with shape {df.shape}."
+        return msg
+    except Exception as e: return f"Error processing Excel file '{file_path}': {str(e)}"
 
 @tool
 def list_datasets() -> str:
     """
-    List all datasets currently loaded in memory.
-    
+    List all datasets currently loaded in memory, along with their shapes.
     Returns:
-        A string listing all available datasets and their shapes
+        A string listing available datasets or a message if no datasets are loaded.
     """
-    if not DATASETS:
-        return "No datasets currently loaded."
-    
-    result = "Available datasets:\n"
-    for name, df in DATASETS.items():
-        result += f"- {name}: shape {df.shape}\n"
-    return result
+    if not DATASETS: return "No datasets currently loaded."
+    return "Available datasets:\n" + "\n".join([f"- {name}: shape {df.shape}" for name, df in DATASETS.items()])
 
 @tool
 def get_dataset_info(dataset_name: str) -> str:
     """
-    Get detailed information about a dataset.
-    
+    Get detailed information about a specified dataset loaded in memory.
+    This includes shape, column names, data types, a preview (head),
+    summary statistics, and missing value counts for each column.
     Args:
-        dataset_name: Name of the dataset to get information about
-        
+        dataset_name: The name of the dataset to get information about.
     Returns:
-        A string with detailed information about the dataset
+        A string with detailed information or an error if the dataset is not found.
     """
-    if dataset_name not in DATASETS:
-        return f"Error: Dataset '{dataset_name}' not found. Use list_datasets() to see available datasets."
-    
+    if dataset_name not in DATASETS: return f"Error: Dataset '{dataset_name}' not found."
     df = DATASETS[dataset_name]
-    
-    # Create a DataFrame info object
-    info = DataFrameInfo(
-        shape=df.shape,
-        columns=df.columns.tolist(),
-        dtypes={col: str(dtype) for col, dtype in df.dtypes.items()},
-        head=df.head().to_string(),
-        description=df.describe().to_string(),
-        missing_values={col: int(df[col].isna().sum()) for col in df.columns}
-    )
-    
-    # Format the output
-    result = f"Dataset: {dataset_name}\n"
-    result += f"Shape: {info.shape[0]} rows × {info.shape[1]} columns\n\n"
-    
-    result += "Columns:\n"
+    info = DataFrameInfo(shape=df.shape, columns=df.columns.tolist(), dtypes={c: str(t) for c,t in df.dtypes.items()}, head=df.head().to_string(), description=df.describe().to_string(), missing_values={c:int(df[c].isna().sum()) for c in df.columns})
+    result = f"Dataset: {dataset_name}\nShape: {info.shape[0]} rows × {info.shape[1]} columns\n\nColumns:\n"
     for col, dtype in info.dtypes.items():
         missing = info.missing_values[col]
-        missing_pct = missing / info.shape[0] * 100
+        missing_pct = (missing / info.shape[0] * 100) if info.shape[0] > 0 else 0
         result += f"- {col} ({dtype}): {missing} missing values ({missing_pct:.1f}%)\n"
-    
-    result += f"\nPreview:\n{info.head}\n\n"
-    result += f"Summary Statistics:\n{info.description}\n"
-    
+    result += f"\nPreview:\n{info.head}\n\nSummary Statistics:\n{info.description}\n"
     return result
 
 @tool
 def query_data(dataset_name: str, query: str) -> str:
     """
-    Run a query on a dataset using pandas query syntax.
-    
+    Run a query on a loaded dataset using pandas .query() syntax.
     Args:
-        dataset_name: Name of the dataset to query
-        query: Query string using pandas query syntax
-        
+        dataset_name: The name of the dataset to query.
+        query: The query string (e.g., "column_name > 10 and other_column == 'value'").
     Returns:
-        A string representation of the query results
+        A string representation of the query results (first 10 rows) or an error message.
     """
-    if dataset_name not in DATASETS:
-        return f"Error: Dataset '{dataset_name}' not found. Use list_datasets() to see available datasets."
-    
+    if dataset_name not in DATASETS: return f"Error: Dataset '{dataset_name}' not found."
     try:
         df = DATASETS[dataset_name]
-        result = df.query(query)
-        return f"Query returned {len(result)} rows:\n{result.head(10).to_string()}\n\n" + \
-               f"Note: Only showing first 10 rows. Full result has {len(result)} rows."
-    except Exception as e:
-        return f"Error executing query: {str(e)}"
+        res_df = df.query(query)
+        return f"Query returned {len(res_df)} rows. Preview (first 10 rows):\n{res_df.head(10).to_string()}"
+    except Exception as e: return f"Error executing query: {str(e)}"
 
 @tool
 def describe_column(dataset_name: str, column_name: str) -> str:
     """
-    Get detailed statistics about a specific column in a dataset.
-    
+    Get detailed statistics about a specific column in a loaded dataset.
+    Includes data type, non-null count, missing values, and type-specific stats
+    (min, max, mean, median, std, quartiles for numeric; unique counts, top values for string).
     Args:
-        dataset_name: Name of the dataset
-        column_name: Name of the column to describe
-        
+        dataset_name: The name of the dataset.
+        column_name: The name of the column to describe.
     Returns:
-        A string with detailed statistics about the column
+        A string with detailed statistics or an error message.
     """
-    if dataset_name not in DATASETS:
-        return f"Error: Dataset '{dataset_name}' not found. Use list_datasets() to see available datasets."
-    
+    if dataset_name not in DATASETS: return f"Error: Dataset '{dataset_name}' not found."
     df = DATASETS[dataset_name]
-    
-    if column_name not in df.columns:
-        return f"Error: Column '{column_name}' not found in dataset '{dataset_name}'."
-    
+    if column_name not in df.columns: return f"Error: Column '{column_name}' not found in dataset '{dataset_name}'. Available columns: {df.columns.tolist()}"
     try:
-        series = df[column_name]
-        result = f"Column: {column_name}\n"
-        result += f"Data type: {series.dtype}\n"
-        result += f"Count: {series.count()} non-null values out of {len(series)} entries\n"
-        result += f"Missing values: {series.isna().sum()} ({series.isna().mean() * 100:.1f}%)\n"
-        
-        if pd.api.types.is_numeric_dtype(series):
-            result += f"Min: {series.min()}\n"
-            result += f"Max: {series.max()}\n"
-            result += f"Mean: {series.mean()}\n"
-            result += f"Median: {series.median()}\n"
-            result += f"Standard deviation: {series.std()}\n"
-            result += f"Quartiles:\n{series.quantile([0.25, 0.5, 0.75]).to_string()}\n"
-        elif pd.api.types.is_string_dtype(series):
-            result += f"Unique values: {series.nunique()}\n"
-            value_counts = series.value_counts().head(10)
-            result += f"Top values:\n{value_counts.to_string()}\n"
-            if len(value_counts) < series.nunique():
-                result += f"Note: Only showing top 10 values out of {series.nunique()} unique values.\n"
-        
-        return result
-    except Exception as e:
-        return f"Error describing column: {str(e)}"
+        s = df[column_name]
+        desc = f"Column: {column_name}\nType: {s.dtype}\nNonNull: {s.count()}/{len(s)}\nMissing: {s.isna().sum()} ({s.isna().mean():.1%})\n"
+        if pd.api.types.is_numeric_dtype(s): desc += f"Stats: Min={s.min()}, Max={s.max()}, Mean={s.mean():.2f}, Median={s.median():.2f}, StdDev={s.std():.2f}\nQuartiles:\n{s.quantile([0.25, 0.5, 0.75]).to_string()}\n"
+        elif pd.api.types.is_string_dtype(s) or pd.api.types.is_object_dtype(s): 
+            desc += f"Unique values: {s.nunique()}\nTop 10 values:\n{s.value_counts().head(10).to_string()}\n"
+            if s.nunique() > 10: desc += f"Note: Only showing top 10 out of {s.nunique()} unique values.\n"
+        else: desc += "No specific summary statistics for this data type."
+        return desc
+    except Exception as e: return f"Error describing column '{column_name}': {str(e)}"
 
 @tool
-def create_visualization(
-    dataset_name: str, 
-    plot_type: str, 
-    x: Optional[str] = None, 
-    y: Optional[str] = None,
-    hue: Optional[str] = None,
-    filename: Optional[str] = None
-) -> str:
+def create_visualization( # Static Matplotlib/Seaborn plots
+    dataset_name: str, plot_type: str, x: Optional[str] = None, y: Optional[str] = None,
+    hue: Optional[str] = None, filename: Optional[str] = None
+) -> str: 
     """
-    Create a visualization of the data and save it to a file.
-    
+    Create a static (PNG) visualization using Matplotlib/Seaborn and save it to a file.
+    Supported plot_types: histogram, scatter, bar, box, line, heatmap, pair.
     Args:
-        dataset_name: Name of the dataset to visualize
-        plot_type: Type of plot (histogram, scatter, bar, box, line, heatmap, pair)
-        x: Column name for x-axis (optional for some plot types)
-        y: Column name for y-axis (optional for some plot types)
-        hue: Column name for color grouping (optional)
-        filename: Name of the file to save the plot to (without extension)
-        
+        dataset_name: Name of the dataset to visualize.
+        plot_type: Type of plot to create.
+        x: Column name for x-axis (behavior varies by plot_type).
+        y: Column name for y-axis (behavior varies by plot_type).
+        hue: Column name for color grouping.
+        filename: Optional name for the output PNG file (without extension).
     Returns:
-        A message indicating success or failure and the path to the saved plot
+        A message indicating success or failure and the path to the saved plot.
     """
-    if dataset_name not in DATASETS:
-        return f"Error: Dataset '{dataset_name}' not found. Use list_datasets() to see available datasets."
-    
+    if dataset_name not in DATASETS: return f"Error: Dataset '{dataset_name}' not found."
     df = DATASETS[dataset_name]
-    
-    # Validate column names
-    if x and x not in df.columns:
-        return f"Error: Column '{x}' not found in dataset '{dataset_name}'."
-    if y and y not in df.columns:
-        return f"Error: Column '{y}' not found in dataset '{dataset_name}'."
-    if hue and hue not in df.columns:
-        return f"Error: Column '{hue}' not found in dataset '{dataset_name}'."
-    
-    # Set default filename if not provided
-    if not filename:
-        filename = f"{dataset_name}_{plot_type}"
-    
-    # Ensure the filename has no extension
+    if x and x not in df.columns: return f"Error: Column '{x}' for x-axis not found."
+    if y and y not in df.columns: return f"Error: Column '{y}' for y-axis not found."
+    if hue and hue not in df.columns: return f"Error: Column '{hue}' for hue not found."
+
+    if not filename: filename = f"{dataset_name}_{plot_type}_static"
     filename = os.path.splitext(filename)[0]
+    output_path = f"{filename}.png"
     
-    # Create the plot
     plt.figure(figsize=(10, 6))
     try:
         if plot_type == "histogram":
-            if not x:
-                return "Error: Column name for x-axis is required for histogram."
-            sns.histplot(data=df, x=x, hue=hue)
-            plt.title(f"Histogram of {x}")
-            
+            if not x: return "Error: X-axis column is required for histogram."
+            sns.histplot(data=df, x=x, hue=hue); plt.title(f"Histogram of {x}")
         elif plot_type == "scatter":
-            if not x or not y:
-                return "Error: Column names for both x and y axes are required for scatter plot."
-            sns.scatterplot(data=df, x=x, y=y, hue=hue)
-            plt.title(f"Scatter plot of {y} vs {x}")
-            
-        elif plot_type == "bar":
-            if not x or not y:
-                return "Error: Column names for both x and y axes are required for bar plot."
-            sns.barplot(data=df, x=x, y=y, hue=hue)
-            plt.title(f"Bar plot of {y} by {x}")
-            
+            if not x or not y: return "Error: X and Y columns are required for scatter plot."
+            sns.scatterplot(data=df, x=x, y=y, hue=hue); plt.title(f"Scatter plot of {y} vs {x}")
+        elif plot_type == "bar": 
+            if not x or not y: return "Error: X and Y columns are required for bar plot."
+            sns.barplot(data=df, x=x, y=y, hue=hue); plt.title(f"Bar plot of {y} by {x}")
         elif plot_type == "box":
-            if not x or not y:
-                return "Error: Column names for both x and y axes are required for box plot."
-            sns.boxplot(data=df, x=x, y=y, hue=hue)
-            plt.title(f"Box plot of {y} by {x}")
-            
+            if not y: return "Error: Y column is required for box plot." 
+            sns.boxplot(data=df, x=x, y=y, hue=hue); plt.title(f"Box plot of {y}" + (f" by {x}" if x else ""))
         elif plot_type == "line":
-            if not x or not y:
-                return "Error: Column names for both x and y axes are required for line plot."
-            sns.lineplot(data=df, x=x, y=y, hue=hue)
-            plt.title(f"Line plot of {y} vs {x}")
-            
+            if not x or not y: return "Error: X and Y columns are required for line plot."
+            sns.lineplot(data=df, x=x, y=y, hue=hue); plt.title(f"Line plot of {y} vs {x}")
         elif plot_type == "heatmap":
-            if x and y:
-                # Create a pivot table for the heatmap
-                pivot_data = df.pivot_table(index=x, columns=y, aggfunc='size', fill_value=0)
-                sns.heatmap(pivot_data, annot=True, cmap="YlGnBu")
-                plt.title(f"Heatmap of {x} vs {y}")
-            else:
-                # Use correlation matrix if no specific columns provided
-                corr_matrix = df.select_dtypes(include=[np.number]).corr()
-                sns.heatmap(corr_matrix, annot=True, cmap="coolwarm", vmin=-1, vmax=1)
-                plt.title("Correlation Matrix Heatmap")
-            
+            numeric_df = df.select_dtypes(include=np.number)
+            if numeric_df.empty: return "Error: No numeric columns for heatmap."
+            sns.heatmap(numeric_df.corr(), annot=True, cmap="coolwarm", fmt=".2f"); plt.title("Correlation Heatmap")
         elif plot_type == "pair":
-            columns = [col for col in [x, y] if col]
-            if hue:
-                columns.append(hue)
-            if not columns:
-                # If no columns specified, use all numeric columns (up to 5)
-                numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-                columns = numeric_cols[:5]
-            sns.pairplot(df[columns], hue=hue)
-            plt.suptitle(f"Pair plot of {', '.join(columns)}", y=1.02)
-            
-        else:
-            return f"Error: Unsupported plot type '{plot_type}'. Supported types: histogram, scatter, bar, box, line, heatmap, pair."
+            sns.pairplot(df.select_dtypes(include=np.number), hue=hue); plt.suptitle(f"Pair Plot of Numeric Columns", y=1.02)
+        else: return f"Error: Static plot type '{plot_type}' not supported."
         
-        # Save the plot
-        output_path = f"{filename}.png"
-        plt.tight_layout()
-        plt.savefig(output_path)
-        plt.close()
-        
-        return f"Successfully created {plot_type} plot and saved to '{output_path}'."
-    except Exception as e:
-        plt.close()
-        return f"Error creating visualization: {str(e)}"
-
-@tool
-def run_analysis(dataset_name: str, analysis_type: str) -> str:
-    """
-    Run a predefined analysis on a dataset.
-    
-    Args:
-        dataset_name: Name of the dataset to analyze
-        analysis_type: Type of analysis to run (summary, correlation, outliers, missing)
-        
-    Returns:
-        A string with the analysis results
-    """
-    if dataset_name not in DATASETS:
-        return f"Error: Dataset '{dataset_name}' not found. Use list_datasets() to see available datasets."
-    
-    df = DATASETS[dataset_name]
-    
-    try:
-        if analysis_type == "summary":
-            # Basic summary statistics
-            numeric_df = df.select_dtypes(include=[np.number])
-            if numeric_df.empty:
-                return "No numeric columns found in the dataset for summary analysis."
-            
-            result = "Summary Statistics:\n"
-            result += numeric_df.describe().to_string()
-            return result
-            
-        elif analysis_type == "correlation":
-            # Correlation analysis
-            numeric_df = df.select_dtypes(include=[np.number])
-            if numeric_df.empty:
-                return "No numeric columns found in the dataset for correlation analysis."
-            
-            corr_matrix = numeric_df.corr()
-            result = "Correlation Matrix:\n"
-            result += corr_matrix.to_string()
-            
-            # Highlight strong correlations
-            strong_corr = []
-            for i, row in enumerate(corr_matrix.values):
-                for j, val in enumerate(row):
-                    if i < j and abs(val) > 0.7:  # Only upper triangle and strong correlations
-                        strong_corr.append((corr_matrix.index[i], corr_matrix.columns[j], val))
-            
-            if strong_corr:
-                result += "\n\nStrong Correlations (|r| > 0.7):\n"
-                for var1, var2, corr in sorted(strong_corr, key=lambda x: abs(x[2]), reverse=True):
-                    result += f"- {var1} and {var2}: {corr:.3f}\n"
-            
-            return result
-            
-        elif analysis_type == "outliers":
-            # Outlier detection
-            numeric_df = df.select_dtypes(include=[np.number])
-            if numeric_df.empty:
-                return "No numeric columns found in the dataset for outlier analysis."
-            
-            result = "Outlier Analysis:\n"
-            
-            for column in numeric_df.columns:
-                q1 = numeric_df[column].quantile(0.25)
-                q3 = numeric_df[column].quantile(0.75)
-                iqr = q3 - q1
-                lower_bound = q1 - 1.5 * iqr
-                upper_bound = q3 + 1.5 * iqr
-                
-                outliers = numeric_df[(numeric_df[column] < lower_bound) | (numeric_df[column] > upper_bound)][column]
-                
-                result += f"\nColumn: {column}\n"
-                result += f"- IQR: {iqr}\n"
-                result += f"- Outlier boundaries: [{lower_bound}, {upper_bound}]\n"
-                result += f"- Number of outliers: {len(outliers)} ({len(outliers) / len(numeric_df) * 100:.1f}% of data)\n"
-                
-                if not outliers.empty:
-                    result += f"- Outlier values: {outliers.values[:5]}"
-                    if len(outliers) > 5:
-                        result += f" ... and {len(outliers) - 5} more"
-                    result += "\n"
-            
-            return result
-            
-        elif analysis_type == "missing":
-            # Missing value analysis
-            result = "Missing Value Analysis:\n"
-            
-            missing = df.isna().sum()
-            missing_pct = missing / len(df) * 100
-            
-            missing_df = pd.DataFrame({
-                'Missing Values': missing,
-                'Percentage': missing_pct
-            })
-            
-            # Sort by missing percentage
-            missing_df = missing_df.sort_values('Percentage', ascending=False)
-            
-            # Only include columns with missing values
-            missing_df = missing_df[missing_df['Missing Values'] > 0]
-            
-            if missing_df.empty:
-                result += "No missing values found in the dataset."
-            else:
-                result += missing_df.to_string()
-                
-                # Suggest actions for handling missing values
-                result += "\n\nSuggestions for handling missing values:\n"
-                for col, row in missing_df.iterrows():
-                    pct = row['Percentage']
-                    if pct > 50:
-                        result += f"- {col}: Consider dropping this column as it has more than 50% missing values.\n"
-                    elif pct > 20:
-                        result += f"- {col}: Consider imputation techniques or using models that handle missing values.\n"
-                    else:
-                        result += f"- {col}: Could be imputed with mean/median/mode or dropped rows with missing values.\n"
-            
-            return result
-            
-        else:
-            return f"Error: Unsupported analysis type '{analysis_type}'. Supported types: summary, correlation, outliers, missing."
-            
-    except Exception as e:
-        return f"Error running analysis: {str(e)}"
+        plt.tight_layout(); plt.savefig(output_path);
+        return f"Successfully created static {plot_type} plot: '{output_path}'."
+    except Exception as e: return f"Error creating static visualization: {str(e)}"
+    finally: plt.close()
 
 @tool
 def create_interactive_visualization(
@@ -449,407 +283,159 @@ def create_interactive_visualization(
     size: Optional[str] = None,
     facet: Optional[str] = None,
     filename: Optional[str] = None
-) -> str:
+) -> Dict[str, Any]:
     """
-    Create an interactive visualization of the data with hover information and save it as an HTML file.
-    
+    DEBUG VERSION: Returns FORCED DEBUG Chart.js data for line plots.
+    Saves actual Plotly HTML/PNG files for line plots if possible.
     Args:
-        dataset_name: Name of the dataset to visualize
-        plot_type: Type of plot (bar, line, scatter, box, histogram, heatmap, pie, sunburst)
-        x: Column name for x-axis (optional for some plot types)
-        y: Column name for y-axis (optional for some plot types)
-        color: Column name for color encoding (optional)
-        size: Column name for size encoding in scatter plots (optional)
-        facet: Column name for creating faceted/grouped plots (optional)
-        filename: Name of the file to save the plot to (without extension)
-        
+        dataset_name: Name of the dataset.
+        plot_type: Type of plot.
+        x: Column for x-axis.
+        y: Column for y-axis.
+        ... (other params)
     Returns:
-        A message indicating success or failure and the path to the saved plot
+        A dictionary with 'textSummary' and 'chartData'.
     """
+    print(f"[DEBUG data_tools.py] create_interactive_visualization (DEBUG MODE) called with:")
+    print(f"  dataset_name: {dataset_name}, plot_type: {plot_type}, x: {x}, y: {y}")
+
     if dataset_name not in DATASETS:
-        return f"Error: Dataset '{dataset_name}' not found. Use list_datasets() to see available datasets."
-    
-    df = DATASETS[dataset_name]
-    
-    # Validate column names
+        return {"textSummary": f"Error: Dataset '{dataset_name}' not found.", "chartData": None}
+    df = DATASETS[dataset_name] 
+
     if x and x not in df.columns:
-        return f"Error: Column '{x}' not found in dataset '{dataset_name}'."
+        return {"textSummary": f"Error: Column '{x}' (for x-axis) not found. Available: {df.columns.tolist()}", "chartData": None}
     if y and y not in df.columns:
-        return f"Error: Column '{y}' not found in dataset '{dataset_name}'."
-    if color and color not in df.columns:
-        return f"Error: Column '{color}' not found in dataset '{dataset_name}'."
-    if size and size not in df.columns:
-        return f"Error: Column '{size}' not found in dataset '{dataset_name}'."
-    if facet and facet not in df.columns:
-        return f"Error: Column '{facet}' not found in dataset '{dataset_name}'."
-    
-    # Set default filename if not provided
-    if not filename:
-        filename = f"{dataset_name}_{plot_type}_interactive"
-    
-    # Ensure the filename has no extension
-    filename = os.path.splitext(filename)[0]
-    
-    try:
-        fig = None
-        
-        if plot_type == "bar":
-            if not x:
-                return "Error: Column name for x-axis is required for bar plot."
+        return {"textSummary": f"Error: Column '{y}' (for y-axis) not found. Available: {df.columns.tolist()}", "chartData": None}
+
+    summary_text = f"Debug: Tool called for {plot_type}."
+    fig = None 
+    output_path_html, output_path_png = None, None 
+
+    if plot_type == "line" and x and y:
+        try:
+            if not filename: temp_filename = f"{dataset_name}_{plot_type}_interactive_debug"
+            else: temp_filename = filename
+            temp_filename = os.path.splitext(temp_filename)[0]
             
-            if y:
-                # Bar chart with values
-                fig = px.bar(
-                    df, x=x, y=y, color=color,
-                    facet_col=facet, 
-                    title=f"Bar Chart of {y} by {x}",
-                    labels={x: x.replace('_', ' ').title(), y: y.replace('_', ' ').title()},
-                    hover_data=df.columns
-                )
-            else:
-                # Count plot (value counts)
-                counts = df[x].value_counts().reset_index()
-                counts.columns = [x, 'count']
-                fig = px.bar(
-                    counts, x=x, y='count',
-                    title=f"Count of {x}",
-                    labels={x: x.replace('_', ' ').title(), 'count': 'Count'},
-                    hover_data={x: True, 'count': True}
-                )
-        
-        elif plot_type == "line":
-            if not x or not y:
-                return "Error: Column names for both x and y axes are required for line plot."
+            df_plot = df.copy()
+            # Attempt to convert x to datetime if it looks like a time/date string column
+            if pd.api.types.is_string_dtype(df_plot[x]) or pd.api.types.is_object_dtype(df_plot[x]):
+                try:
+                    df_plot[x] = pd.to_datetime(df_plot[x], errors='coerce')
+                    if df_plot[x].isnull().all(): df_plot[x] = df[x] # revert if all NaT
+                except: pass 
+
+            fig = px.line(df_plot, x=x, y=y, color=color, facet_col=facet, title=f"Actual Plotly Line: {y} vs {x}")
+            output_path_html = f"{temp_filename}.html"
+            fig.write_html(output_path_html, include_plotlyjs='cdn')
+            output_path_png = f"{temp_filename}.png"
+            fig.write_image(output_path_png)
+            summary_text = f"Debug: Actual Plotly line plot saved to '{output_path_html}' and '{output_path_png}'. Displaying DEBUG chart in UI."
+            print(f"[DEBUG data_tools.py] Actual Plotly line plot saved for debugging.")
+        except Exception as e_plotly:
+            summary_text = f"Debug: Error saving actual Plotly figure: {e_plotly}. Displaying DEBUG chart."
+            print(f"[DEBUG data_tools.py] Error saving actual Plotly figure: {e_plotly}")
             
-            fig = px.line(
-                df, x=x, y=y, color=color,
-                facet_col=facet,
-                title=f"Line Chart of {y} vs {x}",
-                labels={x: x.replace('_', ' ').title(), y: y.replace('_', ' ').title()},
-                hover_data=df.columns
-            )
-        
-        elif plot_type == "scatter":
-            if not x or not y:
-                return "Error: Column names for both x and y axes are required for scatter plot."
-            
-            fig = px.scatter(
-                df, x=x, y=y, color=color, size=size,
-                facet_col=facet,
-                title=f"Scatter Plot of {y} vs {x}",
-                labels={
-                    x: x.replace('_', ' ').title(), 
-                    y: y.replace('_', ' ').title(),
-                    color: color.replace('_', ' ').title() if color else None,
-                    size: size.replace('_', ' ').title() if size else None
-                },
-                hover_data=df.columns
-            )
-            
-            # Add trendline if both x and y are numeric
-            if pd.api.types.is_numeric_dtype(df[x]) and pd.api.types.is_numeric_dtype(df[y]):
-                fig.update_layout(
-                    shapes=[{
-                        'type': 'line',
-                        'x0': df[x].min(),
-                        'y0': df[y].min(),
-                        'x1': df[x].max(),
-                        'y1': df[y].max(),
-                        'line': {
-                            'color': 'red',
-                            'width': 1,
-                            'dash': 'dash'
-                        }
-                    }]
-                )
-        
-        elif plot_type == "box":
-            if not y:
-                return "Error: Column name for y-axis is required for box plot."
-            
-            fig = px.box(
-                df, x=x, y=y, color=color,
-                facet_col=facet,
-                title=f"Box Plot of {y}" + (f" by {x}" if x else ""),
-                labels={
-                    x: x.replace('_', ' ').title() if x else None, 
-                    y: y.replace('_', ' ').title()
-                },
-                hover_data=df.columns
-            )
-        
-        elif plot_type == "histogram":
-            if not x:
-                return "Error: Column name for x-axis is required for histogram."
-            
-            fig = px.histogram(
-                df, x=x, color=color,
-                facet_col=facet,
-                title=f"Histogram of {x}",
-                labels={x: x.replace('_', ' ').title()},
-                hover_data=df.columns,
-                marginal="box"  # Add box plot on the margin
-            )
-        
-        elif plot_type == "heatmap":
-            if not x or not y:
-                # Use correlation matrix if no specific columns provided
-                corr_matrix = df.select_dtypes(include=[np.number]).corr()
-                
-                # Create heatmap using plotly graph objects for more control
-                fig = go.Figure(data=go.Heatmap(
-                    z=corr_matrix.values,
-                    x=corr_matrix.columns,
-                    y=corr_matrix.index,
-                    colorscale='RdBu_r',
-                    zmin=-1, zmax=1,
-                    text=corr_matrix.round(2).values,
-                    hovertemplate='%{y} & %{x}<br>Correlation: %{z:.2f}<extra></extra>'
-                ))
-                
-                fig.update_layout(
-                    title="Correlation Matrix Heatmap",
-                    xaxis_title="Features",
-                    yaxis_title="Features"
-                )
-            else:
-                # Create a pivot table for the heatmap
-                if pd.api.types.is_numeric_dtype(df[y]):
-                    # If y is numeric, use it as values
-                    pivot_data = df.pivot_table(index=x, columns=color if color else None, values=y, aggfunc='mean')
-                    title = f"Heatmap of Average {y} by {x}" + (f" and {color}" if color else "")
-                else:
-                    # Otherwise use counts
-                    pivot_data = pd.crosstab(df[x], df[y])
-                    title = f"Heatmap of {x} vs {y} (Counts)"
-                
-                # Create heatmap
-                fig = px.imshow(
-                    pivot_data,
-                    labels=dict(x=y, y=x, color=y),
-                    title=title,
-                    text_auto=True,
-                    aspect="auto"
-                )
-        
-        elif plot_type == "pie":
-            if not x:
-                return "Error: Column name for values is required for pie chart."
-            
-            # Group by the column and count or sum
-            if y and pd.api.types.is_numeric_dtype(df[y]):
-                # If y is provided and numeric, use it for values
-                grouped = df.groupby(x)[y].sum().reset_index()
-                values = y
-                title = f"Pie Chart of Total {y} by {x}"
-            else:
-                # Otherwise use counts
-                grouped = df[x].value_counts().reset_index()
-                grouped.columns = [x, 'count']
-                values = 'count'
-                title = f"Pie Chart of {x} Distribution"
-            
-            fig = px.pie(
-                grouped, names=x, values=values,
-                title=title,
-                hover_data=[x, values],
-                labels={x: x.replace('_', ' ').title(), values: values.replace('_', ' ').title()}
-            )
-        
-        elif plot_type == "sunburst":
-            if not x:
-                return "Error: At least one column name is required for sunburst chart."
-            
-            # Prepare path for sunburst
-            path = [x]
-            if color:
-                path.append(color)
-            if facet:
-                path.append(facet)
-            
-            # Determine values
-            if y and pd.api.types.is_numeric_dtype(df[y]):
-                values = y
-                title = f"Sunburst Chart of {y} by {', '.join(path)}"
-            else:
-                values = None  # Will use counts
-                title = f"Sunburst Chart of {', '.join(path)}"
-            
-            fig = px.sunburst(
-                df, path=path, values=values,
-                title=title,
-                hover_data=df.columns
-            )
-        
-        else:
-            return f"Error: Unsupported plot type '{plot_type}'. Supported types: bar, line, scatter, box, histogram, heatmap, pie, sunburst."
-        
-        # Add common layout improvements
-        fig.update_layout(
-            hoverlabel=dict(
-                bgcolor="white",
-                font_size=12,
-                font_family="Arial"
+    forced_chart_data = None
+    if plot_type == "line": 
+        forced_chart_data_payload = ChartJsPayload(
+            type="line",
+            data=ChartJsData(
+                labels=["Debug1", "Debug2", "Debug3"],
+                datasets=[ChartJsDataset(label=f"Debug Plot for {dataset_name} ({str(x)} vs {str(y)})", data=[10, 20, 15], borderColor='rgb(255, 99, 132)', fill=False)]
+            ),
+            options=ChartJsOptions(
+                responsive=True,
+                scales=ChartJsScales(
+                    x=ChartJsScale(type='category', title=ChartJsScaleTitle(display=True, text=str(x) if x else 'X-Axis (Debug)')),
+                    y=ChartJsScale(type='linear', beginAtZero=True, title=ChartJsScaleTitle(display=True, text=str(y) if y else 'Y-Axis (Debug)'))
+                ),
+                plugins=ChartJsPlugins(legend=ChartJsLegend(display=True, position="top"))
             )
         )
-        
-        # Save the plot as HTML for interactivity
-        output_path = f"{filename}.html"
-        fig.write_html(output_path, include_plotlyjs='cdn')
-        
-        # Also save as PNG for easy viewing
-        png_path = f"{filename}.png"
-        fig.write_image(png_path)
-        
-        return f"Successfully created interactive {plot_type} plot and saved to '{output_path}' (HTML) and '{png_path}' (PNG)."
-    except Exception as e:
-        return f"Error creating interactive visualization: {str(e)}"
+        forced_chart_data = forced_chart_data_payload.model_dump() 
+        print(f"[DEBUG data_tools.py] Returning FORCED debug chartData for line plot.")
+        summary_text = f"Displaying DEBUG line chart for {x} vs {y}. Actual Plotly files also saved if possible."
+
+    return {
+        "textSummary": summary_text,
+        "chartData": forced_chart_data,
+        "filePath_html": output_path_html, 
+        "filePath_png": output_path_png
+    }
+
+@tool
+def run_analysis(dataset_name: str, analysis_type: str) -> str:
+    """
+    Run a predefined analysis on a dataset.
+    Supported analysis_types: summary, correlation, outliers, missing.
+    Args:
+        dataset_name: Name of the dataset to analyze.
+        analysis_type: Type of analysis to run.
+    Returns:
+        A string with the analysis results or an error message.
+    """
+    if dataset_name not in DATASETS: return f"Error: Dataset '{dataset_name}' not found."
+    df = DATASETS[dataset_name]
+    try:
+        if analysis_type == "summary":
+            numeric_df = df.select_dtypes(include=[np.number])
+            if numeric_df.empty: return "No numeric columns for summary."
+            return f"Summary Statistics:\n{numeric_df.describe().to_string()}"
+        elif analysis_type == "correlation":
+            numeric_df = df.select_dtypes(include=[np.number])
+            if numeric_df.shape[1] < 2: return "Need at least 2 numeric columns for correlation."
+            corr_matrix = numeric_df.corr()
+            return f"Correlation Matrix:\n{corr_matrix.to_string()}"
+        elif analysis_type == "outliers": 
+            numeric_df = df.select_dtypes(include=[np.number])
+            if numeric_df.empty: return "No numeric columns for outlier analysis."
+            result = "Outlier Analysis (IQR method):\n"
+            for column in numeric_df.columns:
+                Q1 = numeric_df[column].quantile(0.25); Q3 = numeric_df[column].quantile(0.75); IQR = Q3 - Q1
+                lower_bound = Q1 - 1.5 * IQR; upper_bound = Q3 + 1.5 * IQR
+                outliers = numeric_df[(numeric_df[column] < lower_bound) | (numeric_df[column] > upper_bound)][column]
+                result += f"\nColumn: {column}\n  Outliers: {len(outliers)} ({len(outliers)/len(numeric_df)*100:.1f}%)"
+            for column in numeric_df.columns:
+                Q1 = numeric_df[column].quantile(0.25); Q3 = numeric_df[column].quantile(0.75); IQR = Q3 - Q1
+                lower_bound = Q1 - 1.5 * IQR; upper_bound = Q3 + 1.5 * IQR
+                outliers = numeric_df[(numeric_df[column] < lower_bound) | (numeric_df[column] > upper_bound)][column]
+                result += f"\nColumn: {column}\n  Outliers: {len(outliers)} ({len(outliers)/len(numeric_df)*100:.1f}%)"
+                if not outliers.empty: result += f" Values: {outliers.head().tolist()}{'...' if len(outliers) > 5 else ''}"
+            return result
+        elif analysis_type == "missing": 
+            missing_summary = df.isnull().sum(); missing_summary = missing_summary[missing_summary > 0]
+            if missing_summary.empty: return "No missing values found."
+            return f"Missing values per column:\n{missing_summary.to_string()}"
+        else: return f"Error: Unsupported analysis type '{analysis_type}'. Supported: summary, correlation, outliers, missing."
+    except Exception as e: return f"Error in '{analysis_type}' analysis: {str(e)}"
 
 @tool
 def generate_sample_data(rows: int = 100, data_type: str = "random") -> str:
     """
     Generate a sample dataset for testing and demonstration purposes.
-    
+    Supported data_types: random, sales.
     Args:
-        rows: Number of rows to generate (default: 100)
-        data_type: Type of data to generate (random, sales, weather, stocks)
-        
+        rows: Number of rows to generate.
+        data_type: Type of data to generate.
     Returns:
-        A message indicating success and the name of the generated dataset
+        A message indicating success and the name of the generated dataset.
     """
     try:
-        if rows <= 0:
-            return "Error: Number of rows must be positive."
-        
+        if rows <= 0: return "Error: Number of rows must be positive."
+        df_gen = None 
+        dataset_name = f"{data_type}_data"
         if data_type == "random":
-            # Generate random data with various data types
-            df = pd.DataFrame({
-                'id': range(1, rows + 1),
-                'numeric_normal': np.random.normal(0, 1, rows),
-                'numeric_uniform': np.random.uniform(0, 100, rows),
-                'integer': np.random.randint(1, 100, rows),
-                'category': np.random.choice(['A', 'B', 'C', 'D'], rows),
-                'boolean': np.random.choice([True, False], rows),
-                'date': pd.date_range(start='2023-01-01', periods=rows)
-            })
-            
-            # Add some missing values
-            for col in df.columns[1:]:  # Skip the ID column
-                mask = np.random.random(rows) < 0.05  # 5% missing values
-                df.loc[mask, col] = np.nan
-                
-            dataset_name = "random_data"
-            
+            df_gen = pd.DataFrame({'id': range(1, rows + 1), 'num_norm': np.random.normal(0,1,rows), 'num_unif': np.random.uniform(0,100,rows), 'int': np.random.randint(1,100,rows), 'cat': np.random.choice(['A','B','C','D'],rows), 'bool': np.random.choice([True,False],rows), 'date': pd.date_range(start='2023-01-01',periods=rows)})
+            for col in df_gen.columns[1:]: df_gen.loc[np.random.random(rows) < 0.05, col] = np.nan
         elif data_type == "sales":
-            # Generate sales data
-            products = ['Product A', 'Product B', 'Product C', 'Product D', 'Product E']
-            regions = ['North', 'South', 'East', 'West', 'Central']
-            channels = ['Online', 'Retail', 'Direct', 'Distributor']
-            
-            df = pd.DataFrame({
-                'date': pd.date_range(start='2023-01-01', periods=rows),
-                'product': np.random.choice(products, rows),
-                'region': np.random.choice(regions, rows),
-                'channel': np.random.choice(channels, rows),
-                'units_sold': np.random.randint(1, 100, rows),
-                'unit_price': np.random.uniform(10, 1000, rows).round(2),
-                'cost': np.random.uniform(5, 500, rows).round(2)
-            })
-            
-            # Calculate revenue and profit
-            df['revenue'] = df['units_sold'] * df['unit_price']
-            df['profit'] = df['revenue'] - (df['units_sold'] * df['cost'])
-            
-            # Add some missing values
-            mask = np.random.random(rows) < 0.03  # 3% missing values
-            df.loc[mask, 'units_sold'] = np.nan
-            
-            dataset_name = "sales_data"
-            
-        elif data_type == "weather":
-            # Generate weather data
-            cities = ['New York', 'Los Angeles', 'Chicago', 'Houston', 'Phoenix', 'Philadelphia', 'San Antonio', 'San Diego']
-            
-            df = pd.DataFrame({
-                'date': pd.date_range(start='2023-01-01', periods=rows),
-                'city': np.random.choice(cities, rows),
-                'temperature': np.random.normal(15, 10, rows).round(1),  # in Celsius
-                'humidity': np.random.uniform(30, 90, rows).round(1),  # in percentage
-                'wind_speed': np.random.exponential(5, rows).round(1),  # in km/h
-                'pressure': np.random.normal(1013, 10, rows).round(1),  # in hPa
-                'precipitation': np.random.exponential(2, rows).round(1)  # in mm
-            })
-            
-            # Add some seasonality to temperature
-            day_of_year = df['date'].dt.dayofyear
-            seasonal_effect = 15 * np.sin(2 * np.pi * day_of_year / 365)
-            df['temperature'] = df['temperature'] + seasonal_effect
-            
-            # Add some missing values
-            for col in ['humidity', 'wind_speed', 'pressure', 'precipitation']:
-                mask = np.random.random(rows) < 0.04  # 4% missing values
-                df.loc[mask, col] = np.nan
-                
-            dataset_name = "weather_data"
-            
-        elif data_type == "stocks":
-            # Generate stock market data
-            stocks = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'JPM']
-            
-            # Base dataframe with dates and stock symbols
-            dates = pd.date_range(start='2023-01-01', periods=rows // len(stocks) + 1)
-            stocks_repeated = np.repeat(stocks, len(dates))[:rows]
-            dates_repeated = np.tile(dates, len(stocks))[:rows]
-            
-            df = pd.DataFrame({
-                'date': dates_repeated,
-                'symbol': stocks_repeated
-            })
-            
-            # Generate price data with random walk
-            symbols = df['symbol'].unique()
-            start_prices = {
-                'AAPL': 150, 'MSFT': 250, 'GOOGL': 100, 'AMZN': 120, 
-                'META': 200, 'TSLA': 180, 'NVDA': 300, 'JPM': 140
-            }
-            
-            prices = []
-            volumes = []
-            
-            for symbol in symbols:
-                symbol_rows = df[df['symbol'] == symbol].shape[0]
-                start_price = start_prices.get(symbol, 100)
-                
-                # Random walk for price
-                daily_returns = np.random.normal(0.0005, 0.015, symbol_rows)
-                price_series = start_price * (1 + daily_returns).cumprod()
-                
-                # Volume with some randomness
-                avg_volume = np.random.randint(100000, 10000000)
-                volume_series = np.random.normal(avg_volume, avg_volume * 0.3, symbol_rows).astype(int)
-                volume_series = np.maximum(volume_series, 0)  # Ensure non-negative
-                
-                prices.extend(price_series)
-                volumes.extend(volume_series)
-            
-            df['open'] = prices
-            df['high'] = df['open'] * (1 + np.random.uniform(0, 0.03, rows))
-            df['low'] = df['open'] * (1 - np.random.uniform(0, 0.03, rows))
-            df['close'] = df['low'] + np.random.uniform(0, 1, rows) * (df['high'] - df['low'])
-            df['volume'] = volumes
-            
-            # Round price columns to 2 decimal places
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col].round(2)
-                
-            dataset_name = "stock_data"
-            
-        else:
-            return f"Error: Unsupported data type '{data_type}'. Supported types: random, sales, weather, stocks."
+            prod = ['A','B','C','D','E']; reg = ['N','S','E','W','C']; chan = ['Online','Retail','Direct']
+            df_gen = pd.DataFrame({'date': pd.date_range(start='2023-01-01',periods=rows), 'product': np.random.choice(prod,rows), 'region': np.random.choice(reg,rows), 'channel': np.random.choice(chan,rows), 'units': np.random.randint(1,100,rows), 'price': np.random.uniform(10,1000,rows).round(2), 'cost': np.random.uniform(5,500,rows).round(2)})
+            df_gen['revenue'] = df_gen['units'] * df_gen['price']; df_gen['profit'] = df_gen['revenue'] - (df_gen['units'] * df_gen['cost'])
+            df_gen.loc[np.random.random(rows) < 0.03, 'units'] = np.nan
+        else: return f"Error: Unsupported data type '{data_type}'. Supported: random, sales."
         
-        # Store the dataset
-        DATASETS[dataset_name] = df
-        
-        return f"Successfully generated {rows} rows of {data_type} data as dataset '{dataset_name}' with shape {df.shape}"
-    except Exception as e:
-        return f"Error generating sample data: {str(e)}"
+        DATASETS[dataset_name] = df_gen
+        return f"Successfully generated {rows} rows of {data_type} data as dataset '{dataset_name}' with shape {df_gen.shape}"
+    except Exception as e: return f"Error generating sample data: {str(e)}"
